@@ -133,8 +133,8 @@ def user_adjust_margins(page_array, orginal_margins):
 
     return margins, padding
 
-def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target_margin_x_mm, target_margin_y_mm, gutter_mm):
-    target_content_size_mm = target_paper_size_mm[0]-2*target_margin_x_mm-gutter_mm, target_paper_size_mm[1]-2*target_margin_y_mm
+def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target_margin_int_mm, target_margin_ext_mm, target_margin_y_mm, gutter_mm):
+    target_content_size_mm = target_paper_size_mm[0]-target_margin_int_mm-target_margin_ext_mm-gutter_mm, target_paper_size_mm[1]-2*target_margin_y_mm
 
     content_size_mm = content_size_px[0] / USU_PER_MM, content_size_px[1] / USU_PER_MM
     content_delta_x, content_delta_y = target_content_size_mm[0] - content_size_mm[0], target_content_size_mm[1] - content_size_mm[1]
@@ -171,9 +171,10 @@ def parse_cli_args():
     argparser.add_argument('--input-pdf', required=True)
     argparser.add_argument('--output-pdf', default=None)
     argparser.add_argument('--paper-type', choices=PAPER_SIZES.keys(), default=None)
-    argparser.add_argument('--margin_x', type=int, default=13, help='X margin w/o gutter (in mm)')
-    argparser.add_argument('--margin_y', type=int, default=13, help='Y margin w/o gutter (in mm)')
-    argparser.add_argument('--gutter', type=int, default=None, help='Gutter in mm')
+    argparser.add_argument('--margin_int', type=int, default=13, help='Interior margin w/o gutter (mm)')
+    argparser.add_argument('--margin_ext', type=int, default=13, help='Exterior margin w/o gutter (mm)')
+    argparser.add_argument('--margin_y', type=int, default=13, help='Vertical margin (mm)')
+    argparser.add_argument('--gutter', type=int, default=None, help='Gutter (mm)')
     argparser.add_argument('--no-rescale', action='store_true')
     argparser.add_argument('--dpi', type=int, default=72)
     argparser.add_argument('--coverage-sample-range', type=int, nargs=2, default=None)
@@ -193,20 +194,23 @@ def parse_cli_args():
     return args
 
 if __name__ == '__main__':
+    ## Setup
     args = parse_cli_args()
     n_pages = args.content_range[1]-args.content_range[0]+1
     gutter_mm = find_gutter_size_mm_from_pages(n_pages) if args.gutter is None else args.gutter
 
     pdf_reader = PdfFileReader(args.input_pdf)
 
+    ## Figure out where & how big the content is
     coverage_arr = generate_document_coverage_array(args.input_pdf, args.coverage_sample_range, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
     content_margins = find_margins_px(coverage_arr)
     content_margins, content_margins_padding = user_adjust_margins(coverage_arr, content_margins)
 
     content_size, content_tx = get_content_size_and_translation(pdf_reader.getPage(args.content_range[0]-1).mediaBox, content_margins)
 
+    ## Decide on target paper type
     if args.paper_type is None:
-        target_paper_type = find_nearest_paper_by_aspect(*content_size, subtract_margins=(args.margin_x, args.margin_x, args.margin_y, args.margin_y), subtract_gutter=gutter_mm)[0]
+        target_paper_type = find_nearest_paper_by_aspect(*content_size, subtract_margins=(args.margin_int, args.margin_ext, args.margin_y, args.margin_y), subtract_gutter=gutter_mm)[0]
         print(f'Closest paper type by aspect ratio: {target_paper_type}')
     else:
         target_paper_type = args.paper_type
@@ -215,8 +219,9 @@ if __name__ == '__main__':
     target_paper_size_mm = PAPER_SIZES[target_paper_type]['trim']['x'], PAPER_SIZES[target_paper_type]['trim']['y']
     target_paper_size_px = (round(target_paper_size_mm[0]*USU_PER_MM), round(target_paper_size_mm[1]*USU_PER_MM))
 
+    ## Scale & centre the content onto the target paper
     if not args.no_rescale:
-        content_scale_factor = calculate_content_scale_factor(content_size, target_paper_size_mm, args.margin_x, args.margin_y, gutter_mm)
+        content_scale_factor = calculate_content_scale_factor(content_size, target_paper_size_mm, args.margin_int, args.margin_ext, args.margin_y, gutter_mm)
     print(f'Content scale factor: {content_scale_factor}{" (overridden)" if args.no_rescale else ""}')
 
     transformed_pages = []
@@ -232,6 +237,7 @@ if __name__ == '__main__':
     for ii in transformed_pages: pdf_out.addPage(ii)
     with open(temp_transformed_path, 'wb') as f: pdf_out.write(f)
 
+    ## Check content location on target paper
     coverage_range_shifted = [ii-(args.content_range[0]-1) for ii in args.coverage_sample_range]
     transformed_coverage_arr = generate_document_coverage_array(temp_transformed_path, coverage_range_shifted, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
     content_margins_on_tgt_paper = find_margins_px(transformed_coverage_arr, pad=[round(ii*content_scale_factor) for ii in content_margins_padding])
@@ -239,23 +245,23 @@ if __name__ == '__main__':
 
     os.remove(temp_transformed_path)
 
-    _, recentre_content_tx = get_content_size_and_translation(transformed_pages[0].mediaBox, content_margins_on_tgt_paper)
+    ## Shift content to final location
+    _, recentre_content_tx = get_content_size_and_translation(transformed_pages[0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
+    margin_tx = (args.margin_int - args.margin_ext) * USU_PER_MM # to shift content according to interal/external margins (for odd page i.e. +ve if interior > exterior margin)
+    gutter_tx = gutter_mm * USU_PER_MM # to add the gutter (for odd page i.e. +ve)
 
     pdf_out = PdfFileWriter()
     for ii, page_transformed in enumerate(transformed_pages):
         print(f'\rRecentering page {ii} ({ii/len(transformed_pages)*100:.1f}%)...', end='')
-        gutter_tx = (gutter_mm * USU_PER_MM * (1 if (ii+1) % 2 else -1)) / 2 # +ve (rightward) shift for odd pages, -ve (left) for even
+        margin_tx_thispage, gutter_tx_thispage = margin_tx * (1 if (ii+1) % 2 else -1), gutter_tx * (1 if (ii+1) % 2 else -1)
 
         page_refit = PageObject.createBlankPage(width=target_paper_size_px[0], height=target_paper_size_px[1])
-        page_refit.mergeTranslatedPage(page_transformed, tx=recentre_content_tx[0]+gutter_tx, ty=recentre_content_tx[1])
+        page_refit.mergeTranslatedPage(page_transformed, tx=recentre_content_tx[0]+margin_tx_thispage+gutter_tx_thispage, ty=recentre_content_tx[1])
 
         pdf_out.addPage(page_refit)
     print('done')
 
-    if args.output_pdf is None:
-        output_path = os.path.splitext(args.input_pdf)[0]+f'_refit_{target_paper_type.replace("-", "_")}.pdf'
-    else:
-        output_path = args.output_pdf
+    output_path = os.path.splitext(args.input_pdf)[0]+f'_refit_{target_paper_type.replace("-", "_")}.pdf' if args.output_pdf is None else args.output_pdf
 
     with open(output_path, 'wb') as f: pdf_out.write(f)
 
