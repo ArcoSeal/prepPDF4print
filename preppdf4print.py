@@ -14,7 +14,7 @@ from pdf2image import convert_from_path
 ## Setup args & constants
 THIS_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(THIS_FILE_DIR, './paper_sizes.json')) as f: PAPER_SIZES = json.load(f)
-with open(os.path.join(THIS_FILE_DIR, './gutter_sizes.json')) as f: GUTTER_SIZES = {int(kk): vv for kk, vv in json.load(f).items()}
+with open(os.path.join(THIS_FILE_DIR, './interior_margin_sizes.json')) as f: INTERIOR_MARGIN_SIZES = {int(kk): vv for kk, vv in json.load(f).items()}
 
 def generate_document_coverage_array(pdf_path, page_range=None, sample_period=1, dpi=72, poppler_path=None):
     if page_range is None: page_range = (1, PdfFileReader(pdf_path).getNumPages())
@@ -44,7 +44,7 @@ def get_page_size_mm(pdf_page):
     w_mm, h_mm = w_usu / USU_PER_MM, h_usu / USU_PER_MM
     return w_mm, h_mm
 
-def find_nearest_paper_by_aspect(w, h, size_type='trim', subtract_margins=None, subtract_gutter=None):
+def find_nearest_paper_by_aspect(w, h, size_type='trim', subtract_margins=None):
     if size_type not in ('trim', 'bleed'): raise Exception()
 
     target_aspect_ratio = w / h
@@ -57,19 +57,16 @@ def find_nearest_paper_by_aspect(w, h, size_type='trim', subtract_margins=None, 
             paper_x -= (margin_l + margin_r)
             paper_y -= (margin_t + margin_b)
 
-        if subtract_gutter:
-            paper_x -= subtract_gutter
-
         paper_aspects.append(paper_x / paper_y)
 
     paper_aspect_deltas = (abs(target_aspect_ratio - ii) for ii in paper_aspects)
     nearest_paper, aspect_delta = sorted(zip((paper_name for paper_name in PAPER_SIZES), paper_aspect_deltas), key=itemgetter(1))[0]
     return nearest_paper, aspect_delta
 
-def find_gutter_size_mm_from_pages(n_pages):
-    for max_pages in sorted(GUTTER_SIZES.keys()):
-        if n_pages <= max_pages: return GUTTER_SIZES[max_pages]
-    raise Exception(f'Too many pages: {n_pages}. Is this actually a book?')
+def find_margin_int_mm_from_pages(n_pages):
+    for max_pages in sorted(INTERIOR_MARGIN_SIZES.keys()):
+        if n_pages <= max_pages: return INTERIOR_MARGIN_SIZES[max_pages]
+    raise Exception(f'Too many pages: {n_pages}. Specify margins manually.')
 
 def midpoint(xy1, xy2, round_coords=False):
     x1, y1 = xy1
@@ -133,8 +130,8 @@ def user_adjust_margins(page_array, orginal_margins):
 
     return margins, padding
 
-def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target_margin_int_mm, target_margin_ext_mm, target_margin_y_mm, gutter_mm):
-    target_content_size_mm = target_paper_size_mm[0]-target_margin_int_mm-target_margin_ext_mm-gutter_mm, target_paper_size_mm[1]-2*target_margin_y_mm
+def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target_margin_int_mm, target_margin_ext_mm, target_margin_y_mm):
+    target_content_size_mm = target_paper_size_mm[0]-target_margin_int_mm-target_margin_ext_mm, target_paper_size_mm[1]-2*target_margin_y_mm
 
     content_size_mm = content_size_px[0] / USU_PER_MM, content_size_px[1] / USU_PER_MM
     content_delta_x, content_delta_y = target_content_size_mm[0] - content_size_mm[0], target_content_size_mm[1] - content_size_mm[1]
@@ -171,10 +168,9 @@ def parse_cli_args():
     argparser.add_argument('--input-pdf', required=True)
     argparser.add_argument('--output-pdf', default=None)
     argparser.add_argument('--paper-type', choices=PAPER_SIZES.keys(), default=None)
-    argparser.add_argument('--margin_int', type=int, default=13, help='Interior margin w/o gutter (mm)')
-    argparser.add_argument('--margin_ext', type=int, default=13, help='Exterior margin w/o gutter (mm)')
-    argparser.add_argument('--margin_y', type=int, default=13, help='Vertical margin (mm)')
-    argparser.add_argument('--gutter', type=int, default=None, help='Gutter (mm)')
+    argparser.add_argument('--margin-int', type=int, default=None, help='Interior margin (mm)')
+    argparser.add_argument('--margin-ext', type=int, default=13, help='Exterior margin (mm)')
+    argparser.add_argument('--margin-y', type=int, default=13, help='Vertical margin (mm)')
     argparser.add_argument('--no-rescale', action='store_true')
     argparser.add_argument('--dpi', type=int, default=72)
     argparser.add_argument('--coverage-sample-range', type=int, nargs=2, default=None)
@@ -197,7 +193,12 @@ if __name__ == '__main__':
     ## Setup
     args = parse_cli_args()
     n_pages = args.content_range[1]-args.content_range[0]+1
-    gutter_mm = find_gutter_size_mm_from_pages(n_pages) if args.gutter is None else args.gutter
+    if args.margin_int is None:
+        margin_int = find_margin_int_mm_from_pages(n_pages)
+        print(f'Decided interior margin from page count: {margin_int}mm')
+    else:
+        margin_int = args.margin_int
+    margin_int, margin_ext, margin_y = find_margin_int_mm_from_pages(n_pages) if args.margin_int is None else args.margin_int, args.margin_ext, args.margin_y
 
     pdf_reader = PdfFileReader(args.input_pdf)
 
@@ -210,7 +211,7 @@ if __name__ == '__main__':
 
     ## Decide on target paper type
     if args.paper_type is None:
-        target_paper_type = find_nearest_paper_by_aspect(*content_size, subtract_margins=(args.margin_int, args.margin_ext, args.margin_y, args.margin_y), subtract_gutter=gutter_mm)[0]
+        target_paper_type = find_nearest_paper_by_aspect(*content_size, subtract_margins=(margin_int, margin_ext, margin_y, margin_y))[0]
         print(f'Closest paper type by aspect ratio: {target_paper_type}')
     else:
         target_paper_type = args.paper_type
@@ -221,7 +222,7 @@ if __name__ == '__main__':
 
     ## Scale & centre the content onto the target paper
     if not args.no_rescale:
-        content_scale_factor = calculate_content_scale_factor(content_size, target_paper_size_mm, args.margin_int, args.margin_ext, args.margin_y, gutter_mm)
+        content_scale_factor = calculate_content_scale_factor(content_size, target_paper_size_mm, margin_int, margin_ext, margin_y)
     print(f'Content scale factor: {content_scale_factor}{" (overridden)" if args.no_rescale else ""}')
 
     transformed_pages = []
@@ -247,16 +248,15 @@ if __name__ == '__main__':
 
     ## Shift content to final location
     _, recentre_content_tx = get_content_size_and_translation(transformed_pages[0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
-    margin_tx = (args.margin_int - args.margin_ext) * USU_PER_MM # to shift content according to interal/external margins (for odd page i.e. +ve if interior > exterior margin)
-    gutter_tx = gutter_mm * USU_PER_MM # to add the gutter (for odd page i.e. +ve)
+    margin_tx = (margin_int - (margin_int+margin_ext)/2) * USU_PER_MM # shift content according to interal/external margins (for odd page i.e. +ve if interior > exterior margin)
 
     pdf_out = PdfFileWriter()
     for ii, page_transformed in enumerate(transformed_pages):
         print(f'\rRecentering page {ii} ({ii/len(transformed_pages)*100:.1f}%)...', end='')
-        margin_tx_thispage, gutter_tx_thispage = margin_tx * (1 if (ii+1) % 2 else -1), gutter_tx * (1 if (ii+1) % 2 else -1)
+        margin_tx_thispage = margin_tx * (1 if (ii+1) % 2 else -1) # invert sign for even pages
 
         page_refit = PageObject.createBlankPage(width=target_paper_size_px[0], height=target_paper_size_px[1])
-        page_refit.mergeTranslatedPage(page_transformed, tx=recentre_content_tx[0]+margin_tx_thispage+gutter_tx_thispage, ty=recentre_content_tx[1])
+        page_refit.mergeTranslatedPage(page_transformed, tx=recentre_content_tx[0]+margin_tx_thispage, ty=recentre_content_tx[1])
 
         pdf_out.addPage(page_refit)
     print('done')
