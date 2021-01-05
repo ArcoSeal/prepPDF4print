@@ -18,17 +18,13 @@ THIS_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(THIS_FILE_DIR, './paper_sizes.json')) as f: PAPER_SIZES = json.load(f)
 with open(os.path.join(THIS_FILE_DIR, './interior_margin_sizes.json')) as f: INTERIOR_MARGIN_SIZES = {int(kk): vv for kk, vv in json.load(f).items()}
 
-# def generate_document_coverage_array(pdf_path, page_range=None, sample_period=1, dpi=72, poppler_path=None):
 def generate_document_coverage_array(pdf_path, page_numbers, dpi=72, poppler_path=None):
     """Generate a boolean matrix of pixels covered by a range of pages in a PDF
 
     Every page in the sample is cast pixel-wise to boolean (False if pixel is white aka RGB(255,255,255),
     else True), and the results are summed.
     """
-    # if page_range is None: page_range = (1, PdfFileReader(pdf_path).getNumPages())
-
     coverage_arr = None
-    # for pp in range(page_range[0], page_range[1]+1, sample_period):
     for pp in page_numbers:
         im = convert_from_path(pdf_path, first_page=pp, last_page=pp, dpi=dpi, poppler_path=poppler_path)[0]
         im_arr = np.array(im)
@@ -202,13 +198,14 @@ def parse_cli_args():
     argparser.add_argument('--margin-int', type=int, default=None, help='Interior margin (mm)')
     argparser.add_argument('--margin-ext', type=int, default=13, help='Exterior margin (mm)')
     argparser.add_argument('--margin-y', type=int, default=13, help='Vertical margin (mm)')
-    argparser.add_argument('--no-rescale', action='store_true')
-    argparser.add_argument('--no-user-recentre', action='store_true')
-    argparser.add_argument('--dpi', type=int, default=72)
-    argparser.add_argument('--coverage-sample-range', type=int, nargs=2, metavar=('FIRST_SAMPLE_PAGE', 'LAST_SAMPLE_PAGE'), default=None)
-    argparser.add_argument('--coverage-sample-period', type=int, default=1)
+    argparser.add_argument('--maximise', choices=('interior', 'exterior'), default='interior', help='If there is excess whitespace, which margin should it be added to?')
+    argparser.add_argument('--no-rescale', action='store_true', help='Don\'t rescale content from original size')
+    argparser.add_argument('--no-user-recentre', action='store_true', help='Don\'t get user input for recentring content')
+    argparser.add_argument('--dpi', type=int, default=72, help='DPI of input PDF')
+    argparser.add_argument('--coverage-sample-range', type=int, nargs=2, metavar=('FIRST_SAMPLE_PAGE', 'LAST_SAMPLE_PAGE'), default=None, help='Page range to use for producing coverage samples')
+    argparser.add_argument('--coverage-sample-period', type=int, default=1, help='Step size when producing coverage sample e.g. 2 will take every 2nd page in coverage sample range')
     argparser.add_argument('--content-range', type=int, nargs=2, metavar=('FIRST_CONTENT_PAGE', 'LAST_CONTENT_PAGE'), default=None)
-    argparser.add_argument('--poppler-path', help='Path to poppler/bin (if required)', default=None)
+    argparser.add_argument('--poppler-path', help='Path to poppler/bin (if required i.e. on Windows)', default=None)
 
     args = argparser.parse_args()
 
@@ -280,21 +277,23 @@ if __name__ == '__main__':
         for ii in content_data[side]['transformed_pages']: pdf_out.addPage(ii)
         with open(content_data[side]['temp_transformed_path'], 'wb') as f: pdf_out.write(f)
 
-    ## Check content location on target paper
+    ## Check content location on target paper & calculate transform to recentre
     for side in ('rh', 'lh'):
-        coverage_sample_pages_shifted = [content_data[side]['input_page_numbers'].index(ii) for ii in content_data[side]['coverage_sample_pages']] # input pdf sample page num -> lh/rh transformed pdf page num
+        coverage_sample_pages_shifted = [content_data[side]['input_page_numbers'].index(ii)+1 for ii in content_data[side]['coverage_sample_pages']] # input pdf sample page num -> lh/rh transformed pdf page num
         transformed_coverage_arr = generate_document_coverage_array(content_data[side]['temp_transformed_path'], coverage_sample_pages_shifted, args.dpi, poppler_path=args.poppler_path)
         content_margins_on_tgt_paper = find_margins_px(transformed_coverage_arr, pad=[round(ii*content_scale_factor) for ii in content_data[side]['content_margins_padding']])
         if not args.no_user_recentre: content_margins_on_tgt_paper, _ = user_adjust_margins(transformed_coverage_arr, content_margins_on_tgt_paper)
 
         os.remove(content_data[side]['temp_transformed_path'])
 
-        ## Shift content to final location
-        _, content_data[side]['recentre_content_tx'] = get_content_size_and_translation(content_data[side]['transformed_pages'][0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
+        rescaled_content_size, content_data[side]['recentre_content_tx'] = get_content_size_and_translation(content_data[side]['transformed_pages'][0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
+        whitespace_x = float(target_paper_size_px[0] - rescaled_content_size[0]) # this should always be >= 0 if we have rescaled the content
+        if args.maximise == 'interior':
+            content_data[side]['margin_tx'] = (whitespace_x/2 - (margin_ext * USU_PER_MM)) * (-1 if side == 'lh' else 1) # maximised interior margin, exterior margin fixed at target
+        elif args.maximise == 'exterior':
+            content_data[side]['margin_tx'] = ((margin_int * USU_PER_MM) - whitespace_x/2) * (-1 if side == 'lh' else 1) # maximised exterior margin, interior margin fixed at target
 
-    content_data['rh']['margin_tx'] = (margin_int - (margin_int+margin_ext)/2) * USU_PER_MM # shift content according to interal/external margins (i.e. +ve if interior > exterior margin)
-    content_data['lh']['margin_tx'] = content_data['rh']['margin_tx'] * -1
-
+    ## Apply final transforms to recentre & set margins
     pdf_out = PdfFileWriter()
     for ii, page_transformed in enumerate(page for page_pair in zip_longest(content_data['rh']['transformed_pages'], content_data['lh']['transformed_pages']) for page in page_pair):
         side = 'rh' if (ii+1) % 2 else 'lh'
@@ -307,7 +306,7 @@ if __name__ == '__main__':
         pdf_out.addPage(page_refit)
     print('done')
 
-    output_path = os.path.splitext(args.input_pdf)[0]+f'_refit_{target_paper_type.replace("-", "_")}.pdf' if args.output_pdf is None else args.output_pdf
+    output_path = f'{os.path.splitext(args.input_pdf)[0]}_refit_{target_paper_type.replace("-", "_")}.pdf' if args.output_pdf is None else args.output_pdf
 
     with open(output_path, 'wb') as f: pdf_out.write(f)
 
