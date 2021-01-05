@@ -179,10 +179,10 @@ def parse_cli_args():
     argparser.add_argument('--margin-y', type=int, default=13, help='Vertical margin (mm)')
     argparser.add_argument('--no-rescale', action='store_true')
     argparser.add_argument('--dpi', type=int, default=72)
-    argparser.add_argument('--coverage-sample-range', type=int, nargs=2, default=None)
+    argparser.add_argument('--coverage-sample-range', type=int, nargs=2, metavar=('FIRST_SAMPLE_PAGE', 'LAST_SAMPLE_PAGE'), default=None)
     argparser.add_argument('--coverage-sample-period', type=int, default=1)
-    argparser.add_argument('--content-range', type=int, nargs=2, default=None)
-    argparser.add_argument('--poppler-path', help='Path to poppler/bin', default=None)
+    argparser.add_argument('--content-range', type=int, nargs=2, metavar=('FIRST_CONTENT_PAGE', 'LAST_CONTENT_PAGE'), default=None)
+    argparser.add_argument('--poppler-path', help='Path to poppler/bin (if required)', default=None)
 
     args = argparser.parse_args()
 
@@ -199,14 +199,15 @@ if __name__ == '__main__':
     ## Setup
     args = parse_cli_args()
     n_pages = args.content_range[1]-args.content_range[0]+1
+    pdf_reader = PdfFileReader(args.input_pdf)
+
+    ## Figure out what margins we will use
     if args.margin_int is None:
         margin_int = find_margin_int_mm_from_pages(n_pages)
-        print(f'Decided interior margin from page count: {margin_int}mm')
+        print(f'Decided interior margin from page count ({n_pages}) -> {margin_int}mm')
     else:
         margin_int = args.margin_int
     margin_int, margin_ext, margin_y = find_margin_int_mm_from_pages(n_pages) if args.margin_int is None else args.margin_int, args.margin_ext, args.margin_y
-
-    pdf_reader = PdfFileReader(args.input_pdf)
 
     ## Figure out where & how big the content is
     coverage_arr = generate_document_coverage_array(args.input_pdf, args.coverage_sample_range, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
