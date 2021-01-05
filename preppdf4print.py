@@ -6,6 +6,7 @@ import json
 from operator import itemgetter
 
 import numpy as np
+from matplotlib import pyplot as plt
 from PyPDF2 import PdfFileReader, PdfFileWriter
 from PyPDF2.pdf import PageObject
 from PIL import Image, ImageDraw
@@ -108,14 +109,17 @@ def user_adjust_margins(page_array, orginal_margins):
     padding = [0, 0, 0, 0]
 
     redraw = True
+    plt.ion()
     while True:
         if redraw:
             print(f'L/R/T/B: {margins}')
             page_im_annot = annotate_found_margins(page_array, margins)
-            page_im_annot.show()
+            # page_im_annot.show()
+            plt.imshow(page_im_annot)
 
         userinput = input('Adjust margins?: ').lower().strip()
         if userinput == '':
+            plt.close()
             break
 
         elif len(userinput) < 3 or not (userinput[0] in 'lrtb' and userinput[1] in '-+' and userinput[2:].isdigit()):
@@ -123,11 +127,13 @@ def user_adjust_margins(page_array, orginal_margins):
             redraw = False
 
         else:
+            plt.close()
             delta = int(userinput[2:]) * (-1 if userinput[1] == '-' else 1)
             padding['lrtb'.index(userinput[0])] += delta
             margins = tuple(sum(ii) for ii in zip(orginal_margins, padding))
             redraw = True
 
+    plt.ioff()
     return margins, padding
 
 def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target_margin_int_mm, target_margin_ext_mm, target_margin_y_mm):
