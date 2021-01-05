@@ -4,6 +4,7 @@ import os
 import argparse
 import json
 from operator import itemgetter
+from itertools import zip_longest
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -17,11 +18,18 @@ THIS_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(THIS_FILE_DIR, './paper_sizes.json')) as f: PAPER_SIZES = json.load(f)
 with open(os.path.join(THIS_FILE_DIR, './interior_margin_sizes.json')) as f: INTERIOR_MARGIN_SIZES = {int(kk): vv for kk, vv in json.load(f).items()}
 
-def generate_document_coverage_array(pdf_path, page_range=None, sample_period=1, dpi=72, poppler_path=None):
-    if page_range is None: page_range = (1, PdfFileReader(pdf_path).getNumPages())
+# def generate_document_coverage_array(pdf_path, page_range=None, sample_period=1, dpi=72, poppler_path=None):
+def generate_document_coverage_array(pdf_path, page_numbers, dpi=72, poppler_path=None):
+    """Generate a boolean matrix of pixels covered by a range of pages in a PDF
+
+    Every page in the sample is cast pixel-wise to boolean (False if pixel is white aka RGB(255,255,255),
+    else True), and the results are summed.
+    """
+    # if page_range is None: page_range = (1, PdfFileReader(pdf_path).getNumPages())
 
     coverage_arr = None
-    for pp in range(page_range[0], page_range[1]+1, sample_period):
+    # for pp in range(page_range[0], page_range[1]+1, sample_period):
+    for pp in page_numbers:
         im = convert_from_path(pdf_path, first_page=pp, last_page=pp, dpi=dpi, poppler_path=poppler_path)[0]
         im_arr = np.array(im)
         if coverage_arr is None: coverage_arr = np.full(im_arr.shape[:2], False)
@@ -30,6 +38,10 @@ def generate_document_coverage_array(pdf_path, page_range=None, sample_period=1,
     return coverage_arr
 
 def find_margins_px(page_array, pad=(0,0,0,0)):
+    """Find the margins around content in an image matrix
+
+    The smallest box that can be drawn around all the non-zero pixels
+    """
     pad_l, pad_r, pad_t, pad_b = pad
 
     cols_w_data = page_array.sum(axis=0).astype(bool)
@@ -147,15 +159,28 @@ def calculate_content_scale_factor(content_size_px, target_paper_size_mm, target
     return content_scale_factor
 
 def get_content_size_and_translation(source_page_mediabox, content_margins):
-    content_ll = (source_page_mediabox.lowerLeft[0]+content_margins[0], source_page_mediabox.lowerLeft[1]+content_margins[3])
-    content_ur = (source_page_mediabox.upperRight[0]-content_margins[1], source_page_mediabox.upperRight[1]-content_margins[2])
-    content_size = (content_ur[0]-content_ll[0], content_ur[1]-content_ll[1])
+    """Calculate width, height, & translation of content on a page based on meda box & content margins
+
+    The media box defines the dimensions of the page. The content margins define the space between the page
+    edges and the content.
+
+    Returns:
+        content size (content_width, content_height): in px
+        content -> page translation (x, y): FROM centre of content TO centre of page
+    """
+    margin_l, margin_r, margin_t, margin_b = content_margins
+
+    # bounding coords of content (will be within page mediabox)
+    content_ll = (source_page_mediabox.lowerLeft[0]+margin_l, source_page_mediabox.lowerLeft[1]+margin_b)
+    content_ur = (source_page_mediabox.upperRight[0]-margin_r, source_page_mediabox.upperRight[1]-margin_t)
+
+    content_size_x, content_size_y = content_ur[0]-content_ll[0], content_ur[1]-content_ll[1]
 
     content_centroid = midpoint(content_ll, content_ur)
     page_centroid = midpoint((0,0), source_page_mediabox.upperRight)
     content_tx = round(page_centroid[0]-content_centroid[0]), round(page_centroid[1]-content_centroid[1]) # translation FROM content centroid TO page centroid
 
-    return content_size, content_tx
+    return (content_size_x, content_size_y), content_tx
 
 def translate_and_scale_onto_target_paper(source_page, content_tx, content_scale_factor, target_paper_size_px):
     src_page_trans_scale = PageObject.createBlankPage(width=source_page.mediaBox.getWidth(), height=source_page.mediaBox.getHeight())
@@ -208,18 +233,25 @@ if __name__ == '__main__':
         print(f'Decided interior margin from page count ({n_pages}) -> {margin_int}mm')
     else:
         margin_int = args.margin_int
-    margin_int, margin_ext, margin_y = find_margin_int_mm_from_pages(n_pages) if args.margin_int is None else args.margin_int, args.margin_ext, args.margin_y
+    margin_ext, margin_y = args.margin_ext, args.margin_y
 
-    ## Figure out where & how big the content is
-    coverage_arr = generate_document_coverage_array(args.input_pdf, args.coverage_sample_range, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
-    content_margins = find_margins_px(coverage_arr)
-    content_margins, content_margins_padding = user_adjust_margins(coverage_arr, content_margins)
+    content_data = {'rh': {'input_page_numbers': list(range(args.content_range[0], args.content_range[1]+1, 2))},
+                    'lh': {'input_page_numbers': list(range(args.content_range[0]+1, args.content_range[1]+1, 2))}}
 
-    content_size, content_tx = get_content_size_and_translation(pdf_reader.getPage(args.content_range[0]-1).mediaBox, content_margins)
+    for side in ('rh', 'lh'):
+        coverage_pages = [ii for ii in content_data[side]['input_page_numbers'] if (args.coverage_sample_range[0] <= ii <= args.coverage_sample_range[1])]
+        content_data[side]['coverage_sample_pages'] = [coverage_pages[ii] for ii in range(0, len(coverage_pages), args.coverage_sample_period)]
+
+        coverage_arr = generate_document_coverage_array(args.input_pdf, content_data[side]['coverage_sample_pages'], args.dpi, poppler_path=args.poppler_path)
+        content_margins = find_margins_px(coverage_arr)
+        content_margins, content_data[side]['content_margins_padding'] = user_adjust_margins(coverage_arr, content_margins)
+        content_data[side]['content_size'], content_data[side]['content_tx'] = get_content_size_and_translation(pdf_reader.getPage(args.content_range[0]-1).mediaBox, content_margins)
+
+    avg_content_size = [sum(ii)/2 for ii in zip(content_data['rh']['content_size'], content_data['lh']['content_size'])]
 
     ## Decide on target paper type
     if args.paper_type is None:
-        target_paper_type = find_nearest_paper_by_aspect(*content_size, subtract_margins=(margin_int, margin_ext, margin_y, margin_y))[0]
+        target_paper_type = find_nearest_paper_by_aspect(*avg_content_size, subtract_margins=(margin_int, margin_ext, margin_y, margin_y))[0]
         print(f'Closest paper type by aspect ratio: {target_paper_type}')
     else:
         target_paper_type = args.paper_type
@@ -230,41 +262,47 @@ if __name__ == '__main__':
 
     ## Scale & centre the content onto the target paper
     if not args.no_rescale:
-        content_scale_factor = calculate_content_scale_factor(content_size, target_paper_size_mm, margin_int, margin_ext, margin_y)
+        content_scale_factor = calculate_content_scale_factor(avg_content_size, target_paper_size_mm, margin_int, margin_ext, margin_y)
     print(f'Content scale factor: {content_scale_factor}{" (overridden)" if args.no_rescale else ""}')
 
-    transformed_pages = []
-    for ii, page_num in enumerate(range(args.content_range[0], args.content_range[1]+1)):
-        print(f'\rTransforming page {ii} ({ii/(args.content_range[1]+1-args.content_range[0])*100:.1f}%)...', end='')
-        src_page = pdf_reader.getPage(page_num-1)
-        rescale_page_on_tgt_paper = translate_and_scale_onto_target_paper(src_page, content_tx, content_scale_factor, target_paper_size_px)
-        transformed_pages.append(rescale_page_on_tgt_paper)
-    print('done')
+    for side in ('rh', 'lh'):
+        input_page_numbers = content_data[side]['input_page_numbers']
+        content_data[side]['transformed_pages'] = []
+        for ii, page_num in enumerate(input_page_numbers):
+            print(f'\rTransforming {side.upper()} page {ii} ({ii/len(input_page_numbers)*100:.1f}%)...', end='')
+            src_page = pdf_reader.getPage(page_num-1)
+            rescale_page_on_tgt_paper = translate_and_scale_onto_target_paper(src_page, content_data[side]['content_tx'], content_scale_factor, target_paper_size_px)
+            content_data[side]['transformed_pages'].append(rescale_page_on_tgt_paper)
+        print('done')
 
-    temp_transformed_path = './temp_transformed.pdf'
-    pdf_out = PdfFileWriter()
-    for ii in transformed_pages: pdf_out.addPage(ii)
-    with open(temp_transformed_path, 'wb') as f: pdf_out.write(f)
+        content_data[side]['temp_transformed_path'] = f'./temp_transformed_{side}.pdf'
+        pdf_out = PdfFileWriter()
+        for ii in content_data[side]['transformed_pages']: pdf_out.addPage(ii)
+        with open(content_data[side]['temp_transformed_path'], 'wb') as f: pdf_out.write(f)
 
     ## Check content location on target paper
-    coverage_range_shifted = [ii-(args.content_range[0]-1) for ii in args.coverage_sample_range]
-    transformed_coverage_arr = generate_document_coverage_array(temp_transformed_path, coverage_range_shifted, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
-    content_margins_on_tgt_paper = find_margins_px(transformed_coverage_arr, pad=[round(ii*content_scale_factor) for ii in content_margins_padding])
-    if not args.no_user_recentre: content_margins_on_tgt_paper, _ = user_adjust_margins(transformed_coverage_arr, content_margins_on_tgt_paper)
+    for side in ('rh', 'lh'):
+        coverage_sample_pages_shifted = [content_data[side]['input_page_numbers'].index(ii) for ii in content_data[side]['coverage_sample_pages']] # input pdf sample page num -> lh/rh transformed pdf page num
+        transformed_coverage_arr = generate_document_coverage_array(content_data[side]['temp_transformed_path'], coverage_sample_pages_shifted, args.dpi, poppler_path=args.poppler_path)
+        content_margins_on_tgt_paper = find_margins_px(transformed_coverage_arr, pad=[round(ii*content_scale_factor) for ii in content_data[side]['content_margins_padding']])
+        if not args.no_user_recentre: content_margins_on_tgt_paper, _ = user_adjust_margins(transformed_coverage_arr, content_margins_on_tgt_paper)
 
-    os.remove(temp_transformed_path)
+        os.remove(content_data[side]['temp_transformed_path'])
 
-    ## Shift content to final location
-    _, recentre_content_tx = get_content_size_and_translation(transformed_pages[0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
-    margin_tx = (margin_int - (margin_int+margin_ext)/2) * USU_PER_MM # shift content according to interal/external margins (for odd page i.e. +ve if interior > exterior margin)
+        ## Shift content to final location
+        _, content_data[side]['recentre_content_tx'] = get_content_size_and_translation(content_data[side]['transformed_pages'][0].mediaBox, content_margins_on_tgt_paper) # to recentre content on page
+
+    content_data['rh']['margin_tx'] = (margin_int - (margin_int+margin_ext)/2) * USU_PER_MM # shift content according to interal/external margins (i.e. +ve if interior > exterior margin)
+    content_data['lh']['margin_tx'] = content_data['rh']['margin_tx'] * -1
 
     pdf_out = PdfFileWriter()
-    for ii, page_transformed in enumerate(transformed_pages):
-        print(f'\rRecentring page {ii} ({ii/len(transformed_pages)*100:.1f}%)...', end='')
-        margin_tx_thispage = margin_tx * (1 if (ii+1) % 2 else -1) # invert sign for even pages
+    for ii, page_transformed in enumerate(page for page_pair in zip_longest(content_data['rh']['transformed_pages'], content_data['lh']['transformed_pages']) for page in page_pair):
+        side = 'rh' if (ii+1) % 2 else 'lh'
+        if page_transformed is None: break # if total # of output pages is odd, we have less LH pages than RH pages and this occurs
+        print(f'\rRecentring {side.upper()} page {ii+1} ({ii/(len(content_data["rh"]["transformed_pages"])+len(content_data["lh"]["transformed_pages"]))*100:.1f}%)...', end='')
 
         page_refit = PageObject.createBlankPage(width=target_paper_size_px[0], height=target_paper_size_px[1])
-        page_refit.mergeTranslatedPage(page_transformed, tx=recentre_content_tx[0]+margin_tx_thispage, ty=recentre_content_tx[1])
+        page_refit.mergeTranslatedPage(page_transformed, tx=content_data[side]['recentre_content_tx'][0]+content_data[side]['margin_tx'], ty=content_data[side]['recentre_content_tx'][1])
 
         pdf_out.addPage(page_refit)
     print('done')
