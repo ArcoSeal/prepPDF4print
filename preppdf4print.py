@@ -117,7 +117,7 @@ def user_adjust_margins(page_array, orginal_margins):
             # page_im_annot.show()
             plt.imshow(page_im_annot)
 
-        userinput = input('Adjust margins?: ').lower().strip()
+        userinput = input('Adjust margins? ([lrtb][+-][0-9]+): ').lower().strip()
         if userinput == '':
             plt.close()
             break
@@ -178,6 +178,7 @@ def parse_cli_args():
     argparser.add_argument('--margin-ext', type=int, default=13, help='Exterior margin (mm)')
     argparser.add_argument('--margin-y', type=int, default=13, help='Vertical margin (mm)')
     argparser.add_argument('--no-rescale', action='store_true')
+    argparser.add_argument('--no-user-recentre', action='store_true')
     argparser.add_argument('--dpi', type=int, default=72)
     argparser.add_argument('--coverage-sample-range', type=int, nargs=2, metavar=('FIRST_SAMPLE_PAGE', 'LAST_SAMPLE_PAGE'), default=None)
     argparser.add_argument('--coverage-sample-period', type=int, default=1)
@@ -249,7 +250,7 @@ if __name__ == '__main__':
     coverage_range_shifted = [ii-(args.content_range[0]-1) for ii in args.coverage_sample_range]
     transformed_coverage_arr = generate_document_coverage_array(temp_transformed_path, coverage_range_shifted, args.coverage_sample_period, args.dpi, poppler_path=args.poppler_path)
     content_margins_on_tgt_paper = find_margins_px(transformed_coverage_arr, pad=[round(ii*content_scale_factor) for ii in content_margins_padding])
-    content_margins_on_tgt_paper, _ = user_adjust_margins(transformed_coverage_arr, content_margins_on_tgt_paper)
+    if not args.no_user_recentre: content_margins_on_tgt_paper, _ = user_adjust_margins(transformed_coverage_arr, content_margins_on_tgt_paper)
 
     os.remove(temp_transformed_path)
 
@@ -259,7 +260,7 @@ if __name__ == '__main__':
 
     pdf_out = PdfFileWriter()
     for ii, page_transformed in enumerate(transformed_pages):
-        print(f'\rRecentering page {ii} ({ii/len(transformed_pages)*100:.1f}%)...', end='')
+        print(f'\rRecentring page {ii} ({ii/len(transformed_pages)*100:.1f}%)...', end='')
         margin_tx_thispage = margin_tx * (1 if (ii+1) % 2 else -1) # invert sign for even pages
 
         page_refit = PageObject.createBlankPage(width=target_paper_size_px[0], height=target_paper_size_px[1])
