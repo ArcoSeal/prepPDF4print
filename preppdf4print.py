@@ -260,6 +260,8 @@ if __name__ == '__main__':
     ## Scale & centre the content onto the target paper
     if not args.no_rescale:
         content_scale_factor = calculate_content_scale_factor(avg_content_size, target_paper_size_mm, margin_int, margin_ext, margin_y)
+    else:
+        content_scale_factor = 1.0
     print(f'Content scale factor: {content_scale_factor}{" (overridden)" if args.no_rescale else ""}')
 
     for side in ('rh', 'lh'):
